@@ -1,0 +1,135 @@
+#include <avr/io.h>
+#include <util/delay.h>
+
+#define CE_PIN PD7
+#define CSN_PIN PB2
+#define VORWAERTS_PIN PD1
+#define RUECKWAERTS_PIN PD2
+
+// SPI-Setup: Master mode
+void spi_init() {
+    
+    DDRB |= (1 << PB3) | (1 << PB5) | (1 << PB2);  // Setze MOSI, SCK und CSN als output
+    SPCR |= (1 << SPE) | (1 << MSTR) | (1 << SPR0);  // Aktiviere SPI im Master mode
+}
+
+uint8_t spi_transmit(uint8_t data) {
+    SPDR = data;  
+    while (!(SPSR & (1 << SPIF)));  
+    return SPDR;  
+}
+
+void nrf24_csn_low() {
+    PORTB &= ~(1 << CSN_PIN);  
+}
+
+void nrf24_csn_high() {
+    PORTB |= (1 << CSN_PIN);  
+}
+
+void nrf24_ce_low() {
+    PORTD &= ~(1 << CE_PIN);  
+}
+
+void nrf24_ce_high() {
+    PORTD |= (1 << CE_PIN);  
+}
+
+void nrf24_write_register(uint8_t reg, uint8_t value) {
+    nrf24_csn_low();
+    spi_transmit(0x20 | reg);  // Register zum beschreiben für Nrf Modul
+    spi_transmit(value);  // Übergebene Daten zum beschreiben
+    nrf24_csn_high();
+}
+
+void nrf24_send_payload(uint8_t* data, uint8_t length) {
+    nrf24_csn_low();
+    spi_transmit(0xA0);  // TX-Payload für Sender
+    for (uint8_t i = 0; i < length; i++) {
+        spi_transmit(data[i]);
+    }
+    nrf24_csn_high();
+    nrf24_ce_high();
+    _delay_us(10); 
+    nrf24_ce_low();
+}
+
+void nrf24_init() {
+    
+    DDRD |= (1 << CE_PIN);
+    DDRB |= (1 << CSN_PIN);
+
+   
+    nrf24_ce_low();
+    nrf24_csn_high();
+
+    
+    spi_init();
+
+    
+    nrf24_write_register(0x00, 0x0E);  // TX modus aktivieren
+    nrf24_write_register(0x01, 0x00);  // auto-ack deaktivieren
+    nrf24_write_register(0x02, 0x01);  // nur pipe 0 empfängt nachrichten
+    nrf24_write_register(0x05, 0x02);  // kanal 2 für die kommunikation
+    nrf24_write_register(0x06, 0x06);  // 1 Mbit
+}
+
+uint16_t adc_read(uint8_t kanal) {
+
+    ADMUX = (ADMUX & 0xF0) | (kanal & 0x0F);  //Kanal für den Adc auswählen
+    ADCSRA |= (1 << ADSC);  // Umwandlung starten
+    while (ADCSRA & (1 << ADSC));  
+    return ADC;
+  }
+
+void adc_init()
+{
+  ADCSRA |= (1<<ADEN);
+  ADCSRA |= (1<<ADPS2);
+  ADCSRA |= (1<<ADPS1);
+  ADCSRA |= (1<<ADPS0);
+  ADMUX |= (1<<REFS0);
+  //ADC auf 5V ref. aktivierrt
+}
+
+
+int main() {
+    
+    adc_init();
+    nrf24_init();
+
+    uint8_t data[3]; 
+    uint8_t richtung;
+
+    while (1) {
+
+      if (!(PIND &(1<<VORWAERTS_PIN)))
+      {
+        richtung = 0;
+      }
+
+    if (!(PIND &(1<<RUECKWAERTS_PIN)))
+      {
+        richtung = 1;
+      }  
+        
+        uint16_t servo_pot_value = adc_read(0);  // Poti wert für servo (0-1023)
+        uint16_t motor_pot_value = adc_read(1);  // Poti wert für motor (0-1023)
+
+        // 10 bit auf 8 wandeln
+        data[0] = servo_pot_value >> 2;  
+        data[1] = motor_pot_value >> 2;  
+        data[3] = richtung;
+
+        // Daten an den slave senden
+        nrf24_send_payload(data, 3);
+        Serial.begin(9600);  // arduino sketch für den seriellen monitior zur prüfung
+
+        while(!Serial);
+    
+
+        Serial.println(data[0]);
+
+        _delay_ms(100);  // Send every 100 ms
+        }
+}
